@@ -1,0 +1,401 @@
+---
+title: "p8106_midterm_zl2860"
+author: "Zongchao Liu"
+date: "4/1/2020"
+output: pdf_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(ModelMetrics)
+library(caret)
+```
+
+# Import data
+
+```{r, include=FALSE}
+data = read_csv('./data/pokemon/pokemon.csv') %>% janitor::clean_names()
+skimr::skim(data)
+```
+
+# Data at a glance
+
+## correlation between basic pokemon traits and species strength
+
+```{r}
+library(corrplot)
+num_predictor = data %>% 
+  select("total", "hp", "attack", "defense", "sp_atk",
+                           "sp_def", "speed", "generation","height_m","weight_kg", "catch_rate")
+
+num_predictor = cor(num_predictor)
+corrplot(num_predictor, method = "pie", type = "lower", 
+         order = "FPC", tl.col = "grey", tl.srt = 45)
+```
+
+
+# visualize the catch rate
+
+```{r,eval=FALSE}
+data %>%
+  ggplot() +
+  #geom_histogram(aes(x = catch_rate,fill = generation))+
+  geom_point(aes(x = total, y = catch_rate, color = generation)) +
+  facet_grid(generation ~ .) +
+  theme_bw() +
+  labs(title = "Fig.2 Relationship Between Catch-rate and Species Strength",
+       x = "Species Strength",
+       y = "Catch Rate") +
+  theme(plot.title = element_text(hjust = .5)) +
+   ggsci:::scale_color_jama()
+
+  
+```
+
+By linear regression, we find that the variable `total` is a sum of ``r colnames(num_predictor)[2:7]``. Hence, for further analysis we can substitute all of these variables with `total`.
+
+
+# Reorganize the dataset for further analysis
+
+```{r, include=FALSE}
+set.seed(886)
+data = read_csv('./data/pokemon/pokemon.csv') %>% 
+  janitor::clean_names() %>%
+  #select(-total) %>% #-hp,-attack,-defense,-sp_atk,-sp_def,-speed
+  select(-number,-name,-type_2,-egg_group_2,-egg_group_1) %>%
+  mutate(pr_male = ifelse(is.na(pr_male), -1, pr_male),
+         generation = factor(generation))
+
+index = sample(1:nrow(data),replace = F)
+data = data[index,]
+
+train = sample_frac(data,size = 0.8, replace = F)# training set 
+
+validation = sample_frac(data,size = 0.2, replace = F) # validation set
+
+
+train_x = model.matrix(catch_rate ~ . , train)[,-1]
+train_y = train$catch_rate
+val_x = model.matrix(catch_rate ~. ,validation)[,-1]
+val_y = validation$catch_rate
+
+ctrl1  = trainControl(method = "cv")
+```
+
+
+
+# predict catching rate
+
+## linear regression
+
+```{r}
+
+set.seed(886)
+
+lm.fit = train(train_x, 
+               train_y,
+               method = "lm",
+               trControl = ctrl1)
+summary(lm.fit)
+
+pred.lm = predict(lm.fit, val_x)
+
+mse(val_y,pred.lm)
+```
+
+## ridge
+ 
+```{r}
+set.seed(886)
+ridge.fit = train(x = train_x,
+                  y = train_y,
+                  method = "glmnet",
+                  tuneGrid = expand.grid(alpha = 0,
+                                         lambda = exp(seq(1,3,length = 200))),
+                  preProc = c("center","scale"),
+                  trControl = ctrl1)
+
+ridge.fit$bestTune #lambda
+ridge.plot = ggplot(ridge.fit,xTrans = function(x) log(x)) +
+                  labs(title = "RMSE v.s. Regularization Parameter (Ridge)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust =.5, size = 10))
+coef(ridge.fit$finalModel,ridge.fit$bestTune$lambda)
+pred.ridge = predict(ridge.fit, val_x)
+mse(val_y,pred.ridge)
+```
+
+
+## LASSO
+
+```{r}
+set.seed(886)
+lasso.fit = train(train_x,
+                  train_y,
+                  method = "glmnet",
+                  tuneGrid = expand.grid(alpha = 1,
+                                         lambda = exp(seq(-1,1,length = 200))),
+                  preProc = c("center","scale"),
+                  trControl = ctrl1)
+
+
+lasso.fit$bestTune
+
+lasso.plot = ggplot(lasso.fit, xTrans = function(x) log(x)) +
+                  labs(title = "RMSE v.s. Regularization (LASSO)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust =.5, size = 10))
+
+coef = coef(lasso.fit$finalModel,lasso.fit$bestTune$lambda)
+pred.lasso = predict(lasso.fit,val_x)
+mse(val_y,pred.lasso)
+
+
+```
+
+## PCR
+
+```{r}
+set.seed(886)
+pcr.fit = train(x = train_x, 
+                 y = train_y,
+                 method = "pcr",
+                 tuneGrid = data.frame(ncomp = 1:ncol(train_x)),
+                 tuneLength = length(train),
+                 trControl = ctrl1,
+                 preProc = c("center", "scale"))
+
+pred.pcr = predict(pcr.fit,val_x)
+
+pcr.fit$bestTune 
+
+mse(val_y, pred.pcr)
+
+pcr.plot = ggplot(pcr.fit, highlight = T) + theme_bw()+
+  labs(title = "RMSE v.s. Number of Components (PCR)") +
+  theme(plot.title = element_text(hjust =.5, size = 10))
+
+library(patchwork)
+
+lasso.plot + ridge.plot + pcr.plot
+  
+```
+
+# mars
+```{r}
+mars_grid = expand.grid(degree = 1:4, 
+                         nprune = 2:60)
+
+set.seed(886)
+mars.fit = train(train_x, train_y,
+                  method = "earth",
+                  tuneGrid = mars_grid,
+                  trControl = ctrl1)
+
+mars.plot = ggplot(mars.fit) + theme_bw() +
+  labs(title = "RMSE v.s. Terms (MARS)") +
+  theme(plot.title = element_text(hjust =.5))
+
+mars.fit$bestTune
+pred.mars = predict(mars.fit,val_x)
+summary(mars.fit$finalModel) 
+```
+
+
+# GAM
+
+```{r}
+set.seed(886)
+gam.fit = train(train_x, train_y,
+                 method = "gam",
+                 tuneGrid = data.frame(method = "GCV.Cp", select = c(TRUE,FALSE)),
+                 trControl = ctrl1)
+
+ggplot(gam.fit)
+
+summary(gam.fit$finalModel)
+gam.fit$finalModel
+gam.fit$bestTune
+pred.gam = predict(gam.fit,val_x)
+```
+
+# KNN
+```{r}
+set.seed(886)
+knn.fit = train(catch_rate ~ .,
+                data = train,
+                tuneGrid = data.frame(k = 1:40),
+                method = "knn",
+                trControl = ctrl1)
+summary(knn.fit)
+knn.fit$bestTune
+knn.plot = ggplot(knn.fit) + theme_bw() +
+  labs(title = "RMSE v.s. Number of Neighbours (KNN)") +
+  theme(plot.title = element_text(hjust =.5))
+
+pred.knn = predict(knn.fit,validation)
+mse(val_y,pred.knn)
+
+mars.plot+knn.plot
+```
+
+# Comparison
+
+```{r}
+set.seed(886)
+resamp = resamples(list(lasso = lasso.fit,
+                        ridge = ridge.fit,
+                        pcr = pcr.fit,
+                        lm = lm.fit,
+                        mars = mars.fit,
+                        gam = gam.fit,
+                        knn = knn.fit
+                        ))
+
+summary(resamp)
+
+parallelplot(resamp,metric = "RMSE")
+bwplot(resamp, metric = "RMSE",
+       main = "Model Comparison Based on RMSE")
+```
+
+
+
+# discussion on the results
+
+```{r}
+result_cr = tibble(
+  lm = pred.lm,
+  lasso = pred.lasso,
+  ridge = pred.ridge,
+  pcr = pred.pcr,
+  mars = pred.mars,
+  gam = pred.gam,
+  real = val_y,
+  knn = pred.knn
+) %>%
+  pivot_longer(1:ncol(result_cr),
+               names_to = "model",
+               values_to = "catch_rate")
+
+result_cr %>%
+  ggplot(aes(x = catch_rate, fill = model)) +
+  geom_density() +
+  facet_grid(model ~ . ) +
+  theme_bw() + 
+  labs(title = "Density of the Catch Rate Predicted by the Models",
+       x = "Catch rate",
+       y = "Density") +
+  theme(plot.title = element_text(hjust = .5)) +
+  ggsci:::scale_fill_jama()
+```
+
+# stability of the prediction
+
+```{r}
+# calculate the catched probability
+result_cp = tibble(
+  lm = pred.lm,
+  lasso = pred.lasso,
+  ridge = pred.ridge,
+  pcr = pred.pcr,
+  mars = pred.mars,
+  gam = pred.gam,
+  real = val_y,
+  knn = pred.knn
+)
+
+# define  scenarios
+max_hp = 240
+#current_hp = 50
+
+
+# calculate the modified catch rate
+
+cal_b = function(catch_rate,cur_hp,status = "slept"){
+  
+  max_hp = 240
+  catch_correction = 1.5 #1.5 == super ball 2.5 advanced ball
+  
+  if(status == "frozen" | status == "slept"){
+    s = 2}
+  
+  else{s = 1.5}
+  return((3*max_hp - 2*cur_hp) * catch_rate * catch_correction * s / (3 * max_hp))
+}
+
+
+
+# determine caught or not
+determination_b = function(b){
+  return(ifelse(b > 255, 1, 0))
+}
+
+
+   
+         
+```
+
+
+# simulation 
+
+```{r}
+test_model = function(){
+  
+  # define  scenarios
+  max_hp = 240
+  current_hp = seq(1,max_hp) # 1~ 240
+  catch_correction = 1.5 # use great ball here
+  
+  prediction = NULL
+  for (cur_hp in current_hp) {
+    
+    print(cur_hp)
+    
+    res = NULL
+    res = data.frame(
+      b.real = determination_b(cal_b(result_cp$real,cur_hp)),
+         b.lm = determination_b(cal_b(result_cp$lm,cur_hp)),
+         b.lasso = determination_b(cal_b(result_cp$lasso,cur_hp)),
+         b.gam = determination_b(cal_b(result_cp$gam,cur_hp)),
+         b.mars = determination_b(cal_b(result_cp$mars,cur_hp)),
+         b.ridge = determination_b(cal_b(result_cp$ridge,cur_hp)),
+         b.pcr = determination_b(cal_b(result_cp$pcr,cur_hp)),
+         b.knn = determination_b(cal_b(result_cp$knn,cur_hp)))
+    
+    correct_rate = c(
+                  lm = sum(res$b.real == res$b.lm)/144,
+                  gam = sum(res$b.real == res$b.gam)/144,
+                  ridge = sum(res$b.real == res$b.ridge)/144,
+                  pcr = sum(res$b.real == res$b.pcr)/144,
+                  lasso = sum(res$b.real == res$b.lasso)/144,
+                  knn = sum(res$b.real == res$b.knn)/144,
+                  mars = sum(res$b.real == res$y)/144)
+    prediction = rbind(prediction,correct_rate)
+    
+  }
+  return(data.frame(prediction))
+}
+
+
+df = test_model() #get the simulation results
+df = df  %>%
+    mutate(hp = c(1:nrow(df))) %>%
+  pivot_longer(1:7,
+               names_to = "model",
+               values_to = "acc")
+df %>% 
+  ggplot(aes(x = hp, y = acc, color = model)) +
+  geom_line() +
+  theme_bw() +
+  labs(title = "Prediction Accuracy v.s. Pokemons' Current HP") +
+  ggsci::scale_color_jama() +
+  theme(plot.title = element_text(hjust = .5))
+
+
+```
+
