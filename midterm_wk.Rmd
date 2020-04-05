@@ -1,0 +1,243 @@
+---
+title: "p8106_midterm_wk2343"
+author: "Gavin Ko"
+date: "4/4/2020"
+output: pdf_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ModelMetrics)
+library(caret)
+library(arsenal)
+library(e1071)
+library(pROC)
+library(klaR)
+library(tidyverse)
+```
+
+# 1. Introduction
+
+## Brief about Pokemon and Interested Question
+Pokemon is a well desinged video game characters that have detailed numeric settings about their characteristics.
+Among all pokemons, some of them are classfied as "legendary". In this project, we wish to predict whether a pokemon is legendary by the properties of that specific pokemon. 
+
+## Data cleaning process
+
+As characters in well designed video game, we assume that there's already tidy and organized statistics for each pokemon. Thankfully, we do find a dataset recording detailed information of all pokemons from generation 1 to 6 on kaggle (source: https://www.kaggle.com/alopez247/pokemon). 
+
+After downloading and reading in the dataset, Our dataset have 721 pokemons' data listed with 23 variables. These variables include their name, basic information like body weight, height and battle related information like attack, defense. 
+
+```{r read in data, echo = F}
+pokemon_data = read.csv("data/pokemon/pokemon.csv", header = T) %>% 
+  janitor::clean_names()
+```
+
+After a quick look on the dataset, we find that `total`, which indicates *species strength*, is simply the sum of `hp`, `attack`, `defense`, `sp_atk`, `sp_def` and `speed`. Also, to aviod collinearity issue, we would forfeit these six variables and keep `total` for further analysis. On the other hand, `type`, `color`, `egg_group` and `body_style` are classified as characters but should be factors instead. Therefore, we need to factorize them. 
+
+```{r factorization, echo = F}
+pokemon_data = pokemon_data %>% 
+  mutate(
+    type_1 = as.factor(type_1),
+    type_2 = as.factor(type_2),
+    color = as.factor(color),
+    egg_group_1 = as.factor(egg_group_1),
+    egg_group_2 = as.factor(egg_group_2),
+    body_style = as.factor(body_style),
+    generation = as.factor(generation))
+
+```
+
+
+# 2. EDA
+
+## Table 1 for grouped data
+
+Since we're mainly interested in whether a pokemon is legendary or not, we can summarize the dataset grouped by legendary status. 
+
+```{r table one, include = F}
+## control what to put in tables
+
+data_controls = tableby.control(
+    total = F, 
+    test = F,
+    numeric.stats = c("meansd", "medianq1q3"),
+    cat.stats = c("countpct"),
+    stats.labels = list(
+        meansd = "Mean (SD)",
+        medianq1q3 = "Median (IQR)",
+        countpct = "N(%)"),
+        cat.simplify = F)
+ 
+## table output
+pokemon_descriptive = 
+  tableby(is_legendary ~ type_1 + type_2 + total + generation + color + has_gender + pr_male +  
+                         egg_group_1 + egg_group_2 + has_mega_evolution + height_m + weight_kg + 
+                         catch_rate + body_style, data = pokemon_data, control = data_controls)
+
+summary(pokemon_descriptive, title = "Descriptive statistics", text = T, digits = 2) %>% 
+  knitr::kable(col.names = c("", "Normal (N = 675)", "Legendary (N = 46)"))
+
+```
+
+We can find some interesting triats from this grouping summary:
+
+1) There's a total of 46 legendary pokemon among 721 pokemons, which is around 6%.
+2) **type**: The most popular type for legendary pokemons are Flying (19.6%), Psychic(17.4%) and Dragon(15.2%). 
+3) **total(species strength)**: while the mean of normal pokemons are around 400, legendary pokemon seems to have much higher average at 620.
+4) **has_gender**: While most normal pokemons do have gender(94.5%), legendary pokemons are the opposite(13.0%). This make discussing it's male proportion(`pr_male`) not proper since the sample size is too small.
+5) **egg_group**: For legendary pokemons, we have **ALL** of them with Undiscoverd egg group. Therefore, once we know that a specific pokemon has this kind of egg, they're highly possible to be legendary.
+6) **height and weight**: The average height and weight of legendary pokemons (2.45m, 201kg) seem to be much larger than those of normal pokemons' (1.06m, 47kg).
+7) **catch rate**: legendary pokemons owns much lower average catch rate (6.65%) compared to those of normal pokemons(> 100%). 
+
+For further analysis, we would focus on these variables to build the prediction model. 
+```{r final dataset}
+pokemon_data_final = 
+  pokemon_data %>% 
+   select(-number, -name, -hp, -attack, -defense, -sp_atk, -sp_def, -speed, -generation, 
+          -color, -pr_male, -body_style, -has_mega_evolution)
+
+```
+
+
+# 3. Prediction Model Building
+
+Apparently, `legendary` is a binary status, so we need to build a non-linear classification model.
+
+```{r building training dataset}
+# create partition
+set.seed(88)
+rowTrain = createDataPartition(y = pokemon_data_final$is_legendary,
+                               p = 2/3,
+                               list = F)
+
+ctrl = trainControl(method = "repeatedcv", 
+                    repeats = 5, 
+                    summaryFunction = twoClassSummary, 
+                    classProbs = T)
+```
+
+## Logistic Regression
+
+### First Attempt - Full Predictors
+
+```{r}
+# This doesn't work
+#set.seed(88)
+#model.glm = train(x = pokemon_data_final[rowTrain, -4],
+                  #y = pokemon_data_final$is_legendary[rowTrain],
+                  #method = "glm",
+                  #metric = "ROC",
+                  #trControl = ctrl)
+```
+
+It doesn't seems working with such a large set of categorical varibles. Due to limited knowledge I have, I can only limit the discussion to continuous and binary predictors and try again.
+
+### Second Attempt - Some Predictors
+
+As a result, I kept `total`, `has_gender`, `height`, `weight` and `catch_rate` as predictors.
+
+```{r logistic CV, warning = F}
+
+set.seed(88)
+model.glm <- train(x = pokemon_data_final[rowTrain,c(3,5,8:10)],
+y = pokemon_data_final$is_legendary[rowTrain],
+method = "glm",
+metric = "ROC",
+trControl = ctrl)
+
+```
+
+## LDA Method
+
+Since our response variable `is_legendary` is a binary outcome, it can be treated as categorical and we can make this porblem a classification question. Under this scenario, we can apply linear discriminant analysis.
+
+```{r LDA model}
+# Model building
+lda.fit <- lda(is_legendary ~ total + has_gender + height_m + weight_kg + catch_rate, 
+               data = pokemon_data_final, subset = rowTrain)
+
+plot(lda.fit)
+```
+
+## QDA Method
+
+Another approach to classification problems is quadratic discriminant analysis.
+
+```{r QDA model}
+# Model building
+qda.fit <- qda(is_legendary ~ total + has_gender + height_m + weight_kg + catch_rate, 
+               data = pokemon_data_final, subset = rowTrain)
+
+```
+
+## NB Method
+
+```{r NB model, warning = F}
+# Model building
+nbGrid <- expand.grid(usekernel = c(FALSE,TRUE),
+                      fL = 2,
+                      adjust = seq(0, 1.5, by = .1))
+
+model.nb <- train(x = pokemon_data_final[rowTrain, c(3,5,8,9,10)],
+                  y = pokemon_data_final$is_legendary[rowTrain],
+                  method = "nb",
+                  tuneGrid = nbGrid,
+                  metric = "ROC",
+                  trControl = ctrl)
+
+plot(model.nb)
+```
+
+## Comparison of Training/ Testing Performance
+```{r comparison}
+# prediction performance
+glm.pred <- predict(model.glm, newdata = pokemon_data_final[-rowTrain,], type = "prob")
+lda.pred <- predict(lda.fit, newdata = pokemon_data_final[-rowTrain,], type = "prob")
+qda.pred <- predict(qda.fit, newdata = pokemon_data_final[-rowTrain,], type = "prob")
+nb.pred  <- predict(model.nb, newdata = pokemon_data_final[-rowTrain,], type = "prob")
+
+# roc curve building
+roc.glm <- roc(pokemon_data_final$is_legendary[-rowTrain], glm.pred[, 2], levels = c("False", "True"))
+
+roc.lda <- roc(pokemon_data_final$is_legendary[-rowTrain], lda.pred$posterior[ ,2], levels = c("False", "True"))
+
+roc.qda <- roc(pokemon_data_final$is_legendary[-rowTrain], qda.pred$posterior[ ,2], levels = c("False", "True"))
+
+roc.nb <- roc(pokemon_data_final$is_legendary[-rowTrain], nb.pred[, 2], levels = c("False", "True"))
+
+# auc
+auc <- c(roc.glm$auc[1], roc.lda$auc[1], roc.qda$auc[1], roc.nb$auc[1])
+
+# roc curve comparison
+plot(roc.glm, legacy.axes = TRUE)
+plot(roc.lda, col = 2, add = TRUE)
+plot(roc.qda, col = 3, add = TRUE)
+plot(roc.nb, col = 4, add = TRUE)
+modelNames <- c("GLM","LDA","QDA","NB")
+legend("bottomright", legend = paste0(modelNames, ": ", round(auc, 4)), col = 1:4, lwd = 2)
+
+```
+
+# 4. Conclusion
+
+## Important Predictors
+
+It's not easy to tell which predictor is more important under the complicated mathematical structure of discrimination analysis. However, we can use logistic regression model as a reference of the importance of each predictors.
+
+```{r coef of glm}
+summary(model.glm$finalModel)
+```
+
+Accordingly, the two major components in predicting whether a pokemon is legendary are having gender or not, height and catch rate. This is consistent to what we've observed in exploratory data analysis. On the other hand, species strength(`total`) doesn't seem to have a huge effect on determining a pokemon to be legendary. This might be a result of the large scale of species strength. 
+
+## Model Comparison
+
+All of the models in use have extremely high accuracy with AUC > 0.99. Among them, Naive Bayes Model stands out as the best model in AUC aspect. This is kind of contradictory to intution cause NB approach are suppose to be more suitable for larger p. Therefore, dispite the high AUC value, I would choose QDA as the final model.
+
+
+
+
+

@@ -80,7 +80,7 @@ validation = sample_frac(data,size = 0.2, replace = F) # validation set
 
 train_x = model.matrix(catch_rate ~ . , train)[,-1]
 train_y = train$catch_rate
-val_x = model.matrix(catch_rate ~. ,validation)[,-1]
+val_x = model.matrix(catch_rate ~ . ,validation)[,-1]
 val_y = validation$catch_rate
 
 ctrl1  = trainControl(method = "cv")
