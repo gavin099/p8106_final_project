@@ -40,16 +40,12 @@ After a quick look on the dataset, we find that `total`, which indicates *specie
 ```{r factorization, echo = F}
 pokemon_data = pokemon_data %>% 
   mutate(
-    type_1 = as.factor(type_1),
-    type_2 = as.factor(type_2),
+    type_1 = as.factor(type_1), type_2 = as.factor(type_2),
     color = as.factor(color),
-    egg_group_1 = as.factor(egg_group_1),
-    egg_group_2 = as.factor(egg_group_2),
-    body_style = as.factor(body_style),
-    generation = as.factor(generation))
+    egg_group_1 = as.factor(egg_group_1), egg_group_2 = as.factor(egg_group_2),
+    body_style = as.factor(body_style), generation = as.factor(generation))
 
 ```
-
 
 # 2. EDA
 
@@ -57,26 +53,18 @@ pokemon_data = pokemon_data %>%
 
 Since we're mainly interested in whether a pokemon is legendary or not, we can summarize the dataset grouped by legendary status. 
 
-```{r table one, include = F}
+```{r table one, echo = F}
 ## control what to put in tables
-
-data_controls = tableby.control(
-    total = F, 
-    test = F,
-    numeric.stats = c("meansd", "medianq1q3"),
-    cat.stats = c("countpct"),
-    stats.labels = list(
-        meansd = "Mean (SD)",
-        medianq1q3 = "Median (IQR)",
-        countpct = "N(%)"),
-        cat.simplify = F)
+data_controls = tableby.control(total = F, test = F,
+    numeric.stats = c("meansd", "medianq1q3"), cat.stats = c("countpct"),
+    stats.labels = list( meansd = "Mean (SD)", medianq1q3 = "Median (IQR)",
+        countpct = "N(%)"), cat.simplify = F)
  
 ## table output
 pokemon_descriptive = 
   tableby(is_legendary ~ type_1 + type_2 + total + generation + color + has_gender + pr_male +  
                          egg_group_1 + egg_group_2 + has_mega_evolution + height_m + weight_kg + 
                          catch_rate + body_style, data = pokemon_data, control = data_controls)
-
 summary(pokemon_descriptive, title = "Descriptive statistics", text = T, digits = 2) %>% 
   knitr::kable(col.names = c("", "Normal (N = 675)", "Legendary (N = 46)"))
 
@@ -93,7 +81,7 @@ We can find some interesting triats from this grouping summary:
 7) **catch rate**: legendary pokemons owns much lower average catch rate (6.65%) compared to those of normal pokemons(> 100%). 
 
 For further analysis, we would focus on these variables to build the prediction model. 
-```{r final dataset}
+```{r final dataset, echo = F}
 pokemon_data_final = 
   pokemon_data %>% 
    select(-number, -name, -hp, -attack, -defense, -sp_atk, -sp_def, -speed, -generation, 
@@ -106,7 +94,7 @@ pokemon_data_final =
 
 Apparently, `legendary` is a binary status, so we need to build a non-linear classification model.
 
-```{r building training dataset}
+```{r building training dataset, echo = F}
 # create partition
 set.seed(88)
 rowTrain = createDataPartition(y = pokemon_data_final$is_legendary,
@@ -121,32 +109,16 @@ ctrl = trainControl(method = "repeatedcv",
 
 ## Logistic Regression
 
-### First Attempt - Full Predictors
+### Choosing Predictors
 
-```{r}
-# This doesn't work
-#set.seed(88)
-#model.glm = train(x = pokemon_data_final[rowTrain, -4],
-                  #y = pokemon_data_final$is_legendary[rowTrain],
-                  #method = "glm",
-                  #metric = "ROC",
-                  #trControl = ctrl)
-```
-
-It doesn't seems working with such a large set of categorical varibles. Due to limited knowledge I have, I can only limit the discussion to continuous and binary predictors and try again.
-
-### Second Attempt - Some Predictors
-
-As a result, I kept `total`, `has_gender`, `height`, `weight` and `catch_rate` as predictors.
+It doesn't seems working with such a large set of categorical varibles. Due to limited knowledge I have, I can only limit the discussion to continuous and binary predictors and try again. As a result, I kept `total`, `has_gender`, `height`, `weight` and `catch_rate` as predictors.
 
 ```{r logistic CV, warning = F}
 
 set.seed(88)
-model.glm <- train(x = pokemon_data_final[rowTrain,c(3,5,8:10)],
-y = pokemon_data_final$is_legendary[rowTrain],
-method = "glm",
-metric = "ROC",
-trControl = ctrl)
+model.glm <- train(x = pokemon_data_final[rowTrain,c(3,5,8:10)], 
+                   y = pokemon_data_final$is_legendary[rowTrain],
+method = "glm", metric = "ROC", trControl = ctrl)
 
 ```
 
@@ -158,8 +130,6 @@ Since our response variable `is_legendary` is a binary outcome, it can be treate
 # Model building
 lda.fit <- lda(is_legendary ~ total + has_gender + height_m + weight_kg + catch_rate, 
                data = pokemon_data_final, subset = rowTrain)
-
-plot(lda.fit)
 ```
 
 ## QDA Method
@@ -187,12 +157,10 @@ model.nb <- train(x = pokemon_data_final[rowTrain, c(3,5,8,9,10)],
                   tuneGrid = nbGrid,
                   metric = "ROC",
                   trControl = ctrl)
-
-plot(model.nb)
 ```
 
 ## Comparison of Training/ Testing Performance
-```{r comparison}
+```{r comparison, warning = F}
 # prediction performance
 glm.pred <- predict(model.glm, newdata = pokemon_data_final[-rowTrain,], type = "prob")
 lda.pred <- predict(lda.fit, newdata = pokemon_data_final[-rowTrain,], type = "prob")
@@ -200,12 +168,12 @@ qda.pred <- predict(qda.fit, newdata = pokemon_data_final[-rowTrain,], type = "p
 nb.pred  <- predict(model.nb, newdata = pokemon_data_final[-rowTrain,], type = "prob")
 
 # roc curve building
-roc.glm <- roc(pokemon_data_final$is_legendary[-rowTrain], glm.pred[, 2], levels = c("False", "True"))
-
-roc.lda <- roc(pokemon_data_final$is_legendary[-rowTrain], lda.pred$posterior[ ,2], levels = c("False", "True"))
-
-roc.qda <- roc(pokemon_data_final$is_legendary[-rowTrain], qda.pred$posterior[ ,2], levels = c("False", "True"))
-
+roc.glm <- roc(pokemon_data_final$is_legendary[-rowTrain], glm.pred[, 2], 
+               levels = c("False", "True"))
+roc.lda <- roc(pokemon_data_final$is_legendary[-rowTrain], lda.pred$posterior[ ,2], 
+               levels = c("False", "True"))
+roc.qda <- roc(pokemon_data_final$is_legendary[-rowTrain], qda.pred$posterior[ ,2], 
+               levels = c("False", "True"))
 roc.nb <- roc(pokemon_data_final$is_legendary[-rowTrain], nb.pred[, 2], levels = c("False", "True"))
 
 # auc
@@ -227,7 +195,7 @@ legend("bottomright", legend = paste0(modelNames, ": ", round(auc, 4)), col = 1:
 
 It's not easy to tell which predictor is more important under the complicated mathematical structure of discrimination analysis. However, we can use logistic regression model as a reference of the importance of each predictors.
 
-```{r coef of glm}
+```{r coef of glm, warning = F}
 summary(model.glm$finalModel)
 ```
 
